@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kopia Retention Policy Visualizer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 20px; max-width: 1400px; margin: 0 auto; }
+  h1 { font-size: 1.4em; margin-bottom: 16px; color: #fff; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; padding: 16px; background: #16213e; border-radius: 8px; align-items: end; }
+  .control-group { display: flex; flex-direction: column; gap: 4px; }
+  .control-group label { font-size: 0.75em; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; }
+  .control-group input, .control-group select { background: #0f3460; border: 1px solid #2a2a5a; color: #fff; padding: 8px 12px; border-radius: 4px; font-size: 0.9em; width: 180px; }
+  .control-group input:focus { outline: none; border-color: #e94560; }
+  button { background: #e94560; color: #fff; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; font-size: 0.9em; height: fit-content; align-self: end; }
+  button:hover { background: #c73e54; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; padding: 12px 16px; background: #16213e; border-radius: 8px; font-size: 0.85em; align-items: center; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-color { width: 14px; height: 14px; border-radius: 3px; }
+  .legend-sep { color: #444; margin: 0 4px; }
+
+  /* Cell borders */
+  .cell-inner { border: 1px solid rgba(255,255,255,0.06); }
+
+  /* Row/column highlight */
+  .grid-row.highlight-row > .day-label-cell::before,
+  .grid-row.highlight-row > .cell::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.05);
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .highlight-col > .cell-inner::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.05);
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 1;
+  }
+  /* Both row+col overlap */
+  .grid-row.highlight-row > .highlight-col > .cell-inner::before {
+    background: rgba(255,255,255,0.1) !important;
+  }
+
+  /* Future cell diagonal lines */
+  .cell-future > .cell-inner::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: repeating-linear-gradient(45deg, transparent, transparent 1px, rgba(255,255,255,0.35) 1px, rgba(255,255,255,0.35) 2px);
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  /* No hover animation on empty cells */
+  .cell-empty { cursor: default; }
+  .cell-empty:hover .cell-inner { transform: none !important; }
+
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .summary-card { background: #16213e; padding: 12px; border-radius: 8px; text-align: center; }
+  .summary-card .num { font-size: 1.8em; font-weight: bold; color: #e94560; }
+  .summary-card .lbl { font-size: 0.75em; color: #aaa; margin-top: 4px; }
+
+  /* Matrix view */
+  .matrix-wrapper { background: #16213e; border-radius: 8px; overflow: hidden; margin: 0; padding: 0; }
+  .matrix-scroll { margin: 0; padding: 0; }
+  .matrix-header-bar { display: flex; justify-content: space-between; align-items: center; padding: 16px 16px 0 16px; font-size: 0.75em; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; }
+  .matrix-scroll { overflow-x: auto; }
+
+  /* Sticky duplicate header — lives inside matrix-wrapper so alignment is automatic */
+  #stickyHeader {
+    display: none;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: #16213e;
+    border-bottom: 1px solid #2a2a5a;
+    font-size: 0.7em;
+    color: #888;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+  #stickyHeader .sh-cell { display: inline-block; text-align: center; line-height: 26px; vertical-align: middle; }
+  .matrix-header { font-size: 0.75em; color: #aaa; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; justify-content: space-between; align-items: center; }
+
+  /* Grid-based matrix (no table) */
+  .grid-header,
+  .grid-row {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 96px repeat(24, 1fr);
+    gap: 0;
+  }
+  #gridBody { overflow: visible; }
+  .grid-header {
+    display: grid;
+    width: 100%;
+    grid-template-columns: 96px repeat(24, 1fr);
+    background: #16213e;
+    border-bottom: 1px solid #2a2a5a;
+  }
+  .sticky-clone {
+    display: none;
+    grid-template-columns: 96px repeat(24, 1fr) !important;
+    background: #16213e;
+    border-bottom: 1px solid #2a2a5a;
+  }
+  .sticky-clone.visible {
+    display: grid !important;
+  }
+  .grid-header-cell {
+    font-size: 0.65em; color: #666; text-align: center; padding: 4px 0;
+    user-select: none;
+  }
+
+  /* Day labels (left column) */
+  .grid-header-cell:first-child, .day-label-cell {
+    font-size: 0.7em; color: #aaa; text-align: right; padding-right: 12px;
+    white-space: nowrap; vertical-align: middle; user-select: none;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Hour header row */
+  .hour-header { font-size: 0.65em; color: #666; text-align: center; padding: 4px 0 !important; user-select: none; }
+
+  /* Cells */
+  .cell { height: 18px; cursor: pointer; position: relative; }
+  .cell-inner { width: 100%; height: 100%; border-radius: 0; transition: transform 0.1s, opacity 0.1s; position: relative; }
+  .cell-future > .cell-inner { overflow: visible; }
+
+
+  /* Cell colors by label count */
+  .cell-0 .cell-inner { background: #1a1a2e; border: 1px solid #253352; }       /* deleted */
+
+  /* Future cells — distinct blue tint, not dark like deleted */
+  table.matrix tbody tr td.cell-future > div.cell-inner { background: #0d2847 !important; border-color: #1a4a7a !important; opacity: 1 !important; }
+  .cell-1 .cell-inner { background: #4a2040; opacity: 0.8; }                     /* 1 label */
+  .cell-2 .cell-inner { background: #6b2d5b; opacity: 0.85; }                    /* 2 labels */
+  .cell-3 .cell-inner { background: #94377a; opacity: 0.9; }                     /* 3+ labels */
+  .cell-4 .cell-inner { background: #c04fa0; opacity: 0.95; }                    /* 4+ labels */
+  .cell-5 .cell-inner { background: #e87cc0; opacity: 1; }                       /* max labels */
+
+  .cell:hover .cell-inner { border: 1px solid #fff !important; }
+
+  /* Tooltip */
+  .tooltip { position: fixed; background: #0f3460; border: 1px solid #e94560; padding: 12px; border-radius: 6px; font-size: 0.8em; z-index: 100; pointer-events: none; display: none; max-width: 320px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+  .tooltip .tt-title { font-weight: bold; margin-bottom: 6px; color: #fff; }
+  .tooltip .tt-labels { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+
+  .badge { padding: 2px 7px; border-radius: 3px; font-size: 0.8em; font-weight: bold; color: #fff; white-space: nowrap; display: inline-block; }
+  .badge.latest   { background: #e94560; }
+  .badge.hourly   { background: #1a3a5c; border: 1px solid #4a9eff; }
+  .badge.daily    { background: #1a5276; border: 1px solid #3498db; }
+  .badge.weekly   { background: #1e8449; border: 1px solid #2ecc71; }
+  .badge.monthly  { background: #7d3c98; border: 1px solid #9b59b6; }
+
+  /* Sort toggle */
+  .sort-toggle { display: flex; align-items: center; gap: 6px; font-size: 0.75em; color: #aaa; cursor: pointer; user-select: none; }
+  .sort-toggle:hover { color: #fff; }
+
+  /* Schedule hint */
+  .hint { font-size: 0.65em; color: #666; margin-top: 2px; }
+
+  @media (max-width: 768px) {
+    .controls { flex-direction: column; }
+    .control-group input, .control-group select { width: 100%; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Kopia Retention Policy Visualizer</h1>
+
+<div class="controls">
+  <div class="control-group">
+    <label>Keep Latest (count)</label>
+    <input type="number" id="keepLatest" value="24" min="0">
+  </div>
+  <div class="control-group">
+    <label>Keep Hourly (hours)</label>
+    <input type="number" id="keepHourly" value="168" min="0">
+  </div>
+  <div class="control-group">
+    <label>Keep Daily (days)</label>
+    <input type="number" id="keepDaily" value="30" min="0">
+  </div>
+  <div class="control-group">
+    <label>Keep Weekly (days)</label>
+    <input type="number" id="keepWeekly" value="90" min="0">
+  </div>
+  <div class="control-group">
+    <label>Keep Monthly (days)</label>
+    <input type="number" id="keepMonthly" value="365" min="0">
+  </div>
+  <div class="control-group">
+    <label>Schedule (--snapshot-time / crontab)</label>
+    <input type="text" id="schedule" value="0 * * * *" placeholder="e.g. 0 */6 * * * or 0:00,12:00">
+  </div>
+  <div class="control-group">
+    <label>Time Window (days)</label>
+    <select id="timeWindow">
+      <option value="30">Last 30 days</option>
+      <option value="90" selected>Last 90 days</option>
+      <option value="180">Last 6 months</option>
+      <option value="365">Last year</option>
+    </select>
+  </div>
+  <button onclick="render()">Render</button>
+</div>
+
+<div class="legend" id="legend"></div>
+<div class="summary" id="summary"></div>
+
+<div class="matrix-wrapper">
+  <div class="matrix-header-bar">
+    <span>Matrix: days (rows) &times; hours (cols)</span>
+    <label class="sort-toggle" onclick="toggleSort()">
+      <input type="checkbox" id="sortToggle" checked style="width:auto"> Newest first
+    </label>
+  </div>
+  <div class="matrix-scroll" id="matrixContainer">
+    <div class="grid-header" id="gridHeader"></div>
+    <div id="gridBody"></div>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const LABEL_NAMES = { latest: 'Latest', hourly: 'Hourly', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
+
+function getPolicy() {
+  return {
+    latest:   Math.max(0, +document.getElementById('keepLatest').value),
+    hourly:   Math.max(0, +document.getElementById('keepHourly').value),
+    daily:    Math.max(0, +document.getElementById('keepDaily').value),
+    weekly:   Math.max(0, +document.getElementById('keepWeekly').value),
+    monthly:  Math.max(0, +document.getElementById('keepMonthly').value),
+    schedule: document.getElementById('schedule').value.trim(),
+    window:   +document.getElementById('timeWindow').value,
+  };
+}
+
+// Parse schedule string into array of {h, m} pairs
+// Supports: "HH:mm,Hh:mm" OR crontab "min hour day month weekday"
+function parseSchedule(str) {
+  if (!str) return [];
+  const trimmed = str.trim();
+
+  // Detect format: if it contains ":" treat as HH:mm list, else crontab
+  if (trimmed.includes(':')) {
+    const times = [];
+    for (const part of trimmed.split(',')) {
+      const m = part.trim().match(/^(\d{1,2}):(\d{2})$/);
+      if (m) times.push({ h: +m[1], m: +m[2] });
+    }
+    return times.sort((a, b) => a.h * 60 + a.m - (b.h * 60 + b.m));
+  }
+
+  // Crontab parsing: min hour day month weekday
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 2) return [];
+
+  const [minField, hourField] = parts;
+  const minutes = expandCronField(minField, 0, 59);
+  const hours = expandCronField(hourField, 0, 23);
+
+  const times = [];
+  for (const h of hours) {
+    for (const m of minutes) {
+      if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+        times.push({ h, m });
+      }
+    }
+  }
+  return times.sort((a, b) => a.h * 60 + a.m - (b.h * 60 + b.m));
+}
+
+// Expand a single cron field: "*", "*/N", "1,3,5", "1-5", "1-5/2"
+function expandCronField(field, min, max) {
+  const values = new Set();
+
+  for (const part of field.split(',')) {
+    // Step: */N or range/N
+    if (part.includes('/')) {
+      const [range, step] = part.split('/');
+      const stepVal = +step;
+      let start = min, end = max;
+      if (range !== '*') {
+        if (range.includes('-')) { [start, end] = range.split('-').map(Number); }
+        else start = +range;
+      }
+      for (let i = start; i <= end; i += stepVal) values.add(i);
+    } else if (part === '*') {
+      for (let i = min; i <= max; i++) values.add(i);
+    } else if (part.includes('-')) {
+      const [s, e] = part.split('-').map(Number);
+      for (let i = s; i <= e; i++) values.add(i);
+    } else {
+      values.add(+part);
+    }
+  }
+
+  return [...values].sort((a, b) => a - b);
+}
+
+// Generate snapshots based on schedule over given days
+function generateSnapshots(p) {
+  const now = new Date();
+  const items = [];
+  const windowDays = p.window;
+  const times = parseSchedule(p.schedule);
+
+  // For each day going backward, create one snapshot per scheduled time
+  for (let d = 0; d <= windowDays; d++) {
+    const date = new Date(now);
+    date.setDate(date.getDate() - d);
+    date.setHours(0, 0, 0, 0);
+
+    for (const t of times) {
+      const snap = new Date(date);
+      snap.setHours(t.h, t.m, 0, 0);
+      items.push({ date: snap, labels: {} });
+    }
+  }
+
+  return items.sort((a, b) => a.date - b.date); // oldest first
+}
+
+function assignLabels(items, p) {
+  const now = new Date();
+  const hourlyMs   = p.hourly * 3600 * 1000;
+  const dailyMs    = p.daily * 24 * 3600 * 1000;
+  const weeklyMs   = p.weekly * 24 * 3600 * 1000;
+  const monthlyMs  = p.monthly * 24 * 3600 * 1000;
+
+  // Latest: last N snapshots (count-based)
+  if (p.latest > 0) {
+    for (let i = 0; i < Math.min(p.latest, items.length); i++) {
+      const idx = items.length - 1 - i;
+      if (items[idx].date <= now) {
+        items[idx].labels.latest = `Latest-${i + 1}`;
+      }
+    }
+  }
+
+  // Duration-based: assign numbered labels to newest in each period within window
+  function assignByWindow(ms, keyFn, labelPrefix) {
+    const eligible = items.filter(x => x.date <= now && (now - x.date) <= ms);
+    const groups = {};
+    for (const x of eligible) {
+      const k = keyFn(x.date);
+      if (!groups[k]) groups[k] = [];
+      groups[k].push(x);
+    }
+
+    // Number each group from newest to oldest
+    const sortedKeys = Object.keys(groups).sort((a, b) => {
+      const da = groups[a][0].date;
+      const db = groups[b][0].date;
+      return db - da; // newest first
+    });
+
+    let num = 1;
+    for (const k of sortedKeys) {
+      const newest = groups[k][groups[k].length - 1];
+      newest.labels[labelPrefix.toLowerCase()] = `${labelPrefix}-${num}`;
+      num++;
+    }
+  }
+
+  if (p.hourly > 0) assignByWindow(hourlyMs, d => `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}-${d.getUTCHours()}`, 'Hourly');
+  if (p.daily > 0)  assignByWindow(dailyMs, d => `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`, 'Daily');
+  if (p.weekly > 0) assignByWindow(weeklyMs, d => { const day = new Date(d); const dow = day.getDay(); day.setDate(day.getDate() - dow + (dow === 0 ? -6 : 1)); return `${day.getFullYear()}-${day.getMonth()}-${day.getDate()}`; }, 'Weekly');
+  if (p.monthly > 0) assignByWindow(monthlyMs, d => `${d.getFullYear()}-${d.getMonth()}`, 'Monthly');
+
+  return items;
+}
+
+function renderLegend() {
+  document.getElementById('legend').innerHTML = `
+    ${Object.entries(LABEL_NAMES).map(([key, name]) => `<div class="legend-item"><span class="badge ${key}" style="font-size:0.7em">${name}</span></div>`).join('')}
+    <span class="legend-sep">│</span>
+    <div class="legend-item"><div class="legend-color" style="background:#1a1a2e;border:1px solid #253352"></div>No labels</div>
+    <div class="legend-item"><div class="legend-color" style="background:#4a2040;opacity:0.8"></div>1 label</div>
+    <div class="legend-item"><div class="legend-color" style="background:#6b2d5b;opacity:0.85"></div>2 labels</div>
+    <div class="legend-item"><div class="legend-color" style="background:#94377a;opacity:0.9"></div>3+ overlap</div>
+    <span class="legend-sep">│</span>
+    <div class="legend-item" style="opacity:0.5"><div class="legend-color" style="background:repeating-linear-gradient(45deg,#1a1a2e,#1a1a2e 3px,rgba(255,255,255,0.2) 3px,rgba(255,255,255,0.2) 4px)"></div>Future</div>
+  `;
+}
+
+function toggleSort() { /* checkbox toggles, render re-runs */ render(); }
+
+function render() {
+  const p = getPolicy();
+  let items = assignLabels(generateSnapshots(p), p);
+
+  if (!items.length) return;
+
+  // Sort direction
+  const newestFirst = document.getElementById('sortToggle').checked;
+
+  // Stats
+  const total = items.length;
+  const kept = items.filter(x => Object.keys(x.labels).length > 0).length;
+  const deleted = total - kept;
+  const multiLabel = items.filter(x => Object.keys(x.labels).length > 1).length;
+  const maxLabels = Math.max(1, ...items.map(i => Object.keys(i.labels).length));
+
+  document.getElementById('summary').innerHTML = `
+    <div class="summary-card"><div class="num">${total}</div><div class="lbl">Total Snapshots</div></div>
+    <div class="summary-card"><div class="num" style="color:#2ecc71">${kept}</div><div class="lbl">Kept (has labels)</div></div>
+    <div class="summary-card"><div class="num" style="color:#e94560">${deleted}</div><div class="lbl">Would be deleted</div></div>
+    <div class="summary-card"><div class="num" style="color:#f39c12">${multiLabel}</div><div class="lbl">Overlapping labels</div></div>
+  `;
+
+  // Build matrix: group by day, cells = hours 0-23
+  const daysMap = {}; // "YYYY-MM-DD" -> { hour -> item or null }
+  for (const x of items) {
+    const key = `${x.date.getFullYear()}-${String(x.date.getMonth() + 1).padStart(2, '0')}-${String(x.date.getDate()).padStart(2, '0')}`;
+    if (!daysMap[key]) daysMap[key] = new Array(24).fill(null);
+    daysMap[key][x.date.getHours()] = x;
+  }
+
+  // Also add empty day rows for gaps (so matrix is continuous)
+  const firstDay = items[0].date;
+  const lastDay = items[items.length - 1].date;
+  for (let d = new Date(firstDay); d <= lastDay; d.setDate(d.getDate() + 1)) {
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    if (!daysMap[key]) daysMap[key] = new Array(24).fill(null);
+  }
+
+  let dayKeys = Object.keys(daysMap).sort();
+  if (newestFirst) dayKeys.reverse();
+
+  // Build grid HTML
+  const gridHeader = document.getElementById('gridHeader');
+  let headerHtml = '<div class="grid-header-cell"></div>';
+  for (let h = 0; h < 24; h++) {
+    headerHtml += `<div class="grid-header-cell">${h}</div>`;
+  }
+  gridHeader.innerHTML = headerHtml;
+
+  const gridBody = document.getElementById('gridBody');
+  let bodyHtml = '';
+
+  for (const dayKey of dayKeys) {
+    const hours = daysMap[dayKey];
+    // Format day label with locale
+    const [y, mo, d] = dayKey.split('-').map(Number);
+    const dateObj = new Date(y, mo - 1, d);
+    const dow = dateObj.getDay();
+    const dayLabel = dateObj.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+
+    bodyHtml += `<div class="grid-row"><div class="day-label-cell" style="${dow === 0 ? 'color:#e94560' : dow === 1 ? 'color:#3498db' : ''}">${dayLabel}</div>`;
+
+    for (let h = 0; h < 24; h++) {
+      const item = hours[h];
+      if (!item) {
+        bodyHtml += `<div class="cell cell-empty" data-hour="${h}" onmouseenter="highlightRow(this.parentElement); highlightCol(this)" onmouseleave="unhighlightRow(); unhighlightCol()"><div class="cell-inner"></div></div>`;
+        continue;
+      }
+
+      const labels = item.labels;
+      const n = Math.min(5, Object.keys(labels).length);
+      const timeStr = item.date.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+      const isFuture = item.date > new Date();
+
+      bodyHtml += `<div class="cell cell-${n}${isFuture ? ' cell-future' : ''}"
+        data-hour="${h}"
+        data-time="${timeStr}"
+        data-labels='${JSON.stringify(labels).replace(/'/g, "&apos;")}'
+        onmouseenter="showTooltip(event, this); highlightRow(this.parentElement); highlightCol(this)" onmouseleave="hideTooltip(); unhighlightRow(); unhighlightCol()">
+        <div class="cell-inner"${isFuture ? ' style="background:#0d2847;border-color:#1a4a7a;opacity:1"' : ''}></div>
+      </div>`;
+    }
+
+    bodyHtml += '</div>';
+  }
+
+  gridBody.innerHTML = bodyHtml;
+
+  // Sticky header — clone grid-header, show fixed when original scrolls away
+  let stickyClone = null;
+  const stickyOrig = document.getElementById('gridHeader');
+
+  function setupSticky() {
+    if (stickyClone) return;
+    const rect = stickyOrig.getBoundingClientRect();
+    stickyClone = stickyOrig.cloneNode(true);
+    stickyClone.removeAttribute('id');
+    stickyClone.classList.add('sticky-clone');
+    Object.assign(stickyClone.style, {
+      position: 'fixed', top: '0', left: rect.left + 'px', width: rect.width + 'px', maxWidth: rect.width + 'px', zIndex: '50',
+    });
+    document.body.appendChild(stickyClone);
+
+    function updateSticky() {
+      const origRect = stickyOrig.getBoundingClientRect();
+      if (origRect.top < 0) {
+        stickyClone.classList.add('visible');
+        stickyClone.style.left = origRect.left + 'px';
+      } else {
+        stickyClone.classList.remove('visible');
+      }
+    }
+    window.addEventListener('scroll', updateSticky, { passive: true });
+    window.addEventListener('resize', updateSticky);
+  }
+
+  setupSticky();
+  renderLegend();
+
+
+
+  // Scroll to show today's row
+  const container = document.getElementById('matrixContainer');
+  if (newestFirst) { setTimeout(() => container.scrollTop = 0, 50); }
+  else { setTimeout(() => container.scrollTop = container.scrollHeight, 50); }
+}
+
+function showTooltip(e, el) {
+  const tt = document.getElementById('tooltip');
+  let labels;
+  try { labels = JSON.parse(el.dataset.labels); } catch { labels = {}; }
+
+  const labelList = Object.keys(labels).length > 0
+    ? Object.entries(labels).map(([key, val]) => `<span class="badge ${key}">${val}</span>`).join(' ')
+    : el.closest('.cell-future')
+      ? '<em style="color:#5b9bd5">Future snapshot &mdash; not yet taken</em>'
+      : '<em style="color:#666">No labels &mdash; would be deleted</em>';
+
+  tt.innerHTML = `<div class="tt-title">${el.dataset.time}</div><div class="tt-labels">${labelList}</div>`;
+  tt.style.display = 'block';
+
+  const rect = el.getBoundingClientRect();
+  tt.style.left = Math.min(rect.right + 8, window.innerWidth - 340) + 'px';
+  tt.style.top = Math.max(10, rect.top - 10) + 'px';
+}
+
+function hideTooltip() { document.getElementById('tooltip').style.display = 'none'; }
+
+// Row highlight
+let _highlightedRow = null;
+function highlightRow(tr) {
+  if (_highlightedRow && _highlightedRow !== tr) _highlightedRow.classList.remove('highlight-row');
+  tr.classList.add('highlight-row');
+  _highlightedRow = tr;
+}
+function unhighlightRow() {
+  if (_highlightedRow) { _highlightedRow.classList.remove('highlight-row'); _highlightedRow = null; }
+}
+
+// Column highlight
+let _highlightedCol = null;
+function highlightCol(td) {
+  const hour = td.dataset.hour;
+  document.querySelectorAll(`.cell[data-hour="${hour}"]`).forEach(c => c.classList.add('highlight-col'));
+  document.querySelector(`.hour-header:nth-child(${+hour + 2})`)?.classList.add('highlight-col');
+  _highlightedCol = hour;
+}
+function unhighlightCol() {
+  document.querySelectorAll('.highlight-col').forEach(c => c.classList.remove('highlight-col'));
+  _highlightedCol = null;
+}
+
+render();
+</script>
+
+</body>
+</html>
