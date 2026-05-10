@@ -215,7 +215,7 @@
       <option value="365">Last year</option>
     </select>
   </div>
-  <button onclick="render()">Render</button>
+  <button onclick="render(); updateUrl()">Render</button>
 </div>
 
 <div class="legend" id="legend"></div>
@@ -575,7 +575,24 @@ function unhighlightCol() {
   _highlightedCol = null;
 }
 
+// Restore params from URL
+const urlParams = new URLSearchParams(window.location.search);
+for (const [key, val] of urlParams) {
+  const el = document.getElementById(key);
+  if (el) el.value = val;
+}
 render();
+
+// Update URL on change
+function updateUrl() {
+  const params = new URLSearchParams();
+  ['keepLatest','keepHourly','keepDaily','keepWeekly','keepMonthly','schedule','timeWindow'].forEach(k => {
+    const el = document.getElementById(k);
+    if (el && el.value) params.set(k, el.value);
+  });
+  const url = window.location.pathname + '?' + params.toString();
+  window.history.replaceState(null, '', url);
+}
 </script>
 
 </body>
