@@ -108,6 +108,21 @@
     background: #16213e;
     border-bottom: 1px solid #2a2a5a;
   }
+  .grid-row.row-border {
+    border-top: 1px dashed rgba(255,255,255,0.12);
+  }
+  .grid-row.row-border-year {
+    border-top: 2px solid rgba(255,255,255,0.25);
+  }
+  .cell.legend-highlight::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.15);
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 3;
+  }
   .sticky-clone {
     display: none;
     grid-template-columns: 96px repeat(24, 1fr) !important;
@@ -163,6 +178,7 @@
   .badge.daily    { background: #1a5276; border: 1px solid #3498db; }
   .badge.weekly   { background: #1e8449; border: 1px solid #2ecc71; }
   .badge.monthly  { background: #7d3c98; border: 1px solid #9b59b6; }
+  .badge.annual   { background: #d4ac0d; border: 1px solid #f1c40f; }
 
   /* Sort toggle */
   .sort-toggle { display: flex; align-items: center; gap: 6px; font-size: 0.75em; color: #aaa; cursor: pointer; user-select: none; }
@@ -184,38 +200,46 @@
 <div class="controls">
   <div class="control-group">
     <label>Keep Latest (count)</label>
-    <input type="number" id="keepLatest" value="24" min="0">
+    <input type="number" id="keepLatest" value="10" min="0">
   </div>
   <div class="control-group">
     <label>Keep Hourly (hours)</label>
-    <input type="number" id="keepHourly" value="168" min="0">
+    <input type="number" id="keepHourly" value="48" min="0">
   </div>
   <div class="control-group">
     <label>Keep Daily (days)</label>
-    <input type="number" id="keepDaily" value="30" min="0">
+    <input type="number" id="keepDaily" value="7" min="0">
   </div>
   <div class="control-group">
     <label>Keep Weekly (days)</label>
-    <input type="number" id="keepWeekly" value="90" min="0">
+    <input type="number" id="keepWeekly" value="4" min="0">
   </div>
   <div class="control-group">
     <label>Keep Monthly (days)</label>
-    <input type="number" id="keepMonthly" value="365" min="0">
+    <input type="number" id="keepMonthly" value="24" min="0">
   </div>
   <div class="control-group">
+    <label>Keep Annual (months)</label>
+    <input type="number" id="keepAnnual" value="3" min="0">
+  </div>
+  <div style="display:flex;gap:16px;align-items:end">
+  <div class="control-group" style="flex:1">
     <label>Schedule (--snapshot-time / crontab)</label>
     <input type="text" id="schedule" value="0 * * * *" placeholder="e.g. 0 */6 * * * or 0:00,12:00">
   </div>
-  <div class="control-group">
+  <div class="control-group" style="flex:1">
     <label>Time Window (days)</label>
     <select id="timeWindow">
       <option value="30">Last 30 days</option>
       <option value="90" selected>Last 90 days</option>
       <option value="180">Last 6 months</option>
       <option value="365">Last year</option>
+      <option value="1095">Three years</option>
     </select>
   </div>
+  </div>
   <button onclick="render(); updateUrl()">Render</button>
+  <button onclick="resetDefaults()" style="background:#0f3460;border:1px solid #2a2a5a">Reset</button>
 </div>
 
 <div class="legend" id="legend"></div>
@@ -237,7 +261,7 @@
 <div class="tooltip" id="tooltip"></div>
 
 <script>
-const LABEL_NAMES = { latest: 'Latest', hourly: 'Hourly', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' };
+const LABEL_NAMES = { latest: 'Latest', hourly: 'Hourly', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', annual: 'Annual' };
 
 function getPolicy() {
   return {
@@ -246,6 +270,7 @@ function getPolicy() {
     daily:    Math.max(0, +document.getElementById('keepDaily').value),
     weekly:   Math.max(0, +document.getElementById('keepWeekly').value),
     monthly:  Math.max(0, +document.getElementById('keepMonthly').value),
+    annual:   Math.max(0, +document.getElementById('keepAnnual').value),
     schedule: document.getElementById('schedule').value.trim(),
     window:   +document.getElementById('timeWindow').value,
   };
@@ -339,19 +364,31 @@ function generateSnapshots(p) {
 
 function assignLabels(items, p) {
   const now = new Date();
-  const hourlyMs   = p.hourly * 3600 * 1000;
-  const dailyMs    = p.daily * 24 * 3600 * 1000;
-  const weeklyMs   = p.weekly * 24 * 3600 * 1000;
-  const monthlyMs  = p.monthly * 24 * 3600 * 1000;
+  const hourlyMs   = p.hourly * 3600 * 1000;        // hours
+  const dailyMs    = p.daily * 24 * 3600 * 1000;     // days
+  const weeklyMs   = p.weekly * 7 * 24 * 3600 * 1000; // weeks → days
+  const monthlyMs  = p.monthly * 30 * 24 * 3600 * 1000; // months → ~days
+  const annualMs   = p.annual * 365 * 24 * 3600 * 1000;  // years → days
 
-  // Latest: last N snapshots (count-based)
+  // Latest: last N snapshots (count-based, only past-due)
   if (p.latest > 0) {
-    for (let i = 0; i < Math.min(p.latest, items.length); i++) {
-      const idx = items.length - 1 - i;
-      if (items[idx].date <= now) {
-        items[idx].labels.latest = `Latest-${i + 1}`;
+    let count = 0;
+    for (let i = items.length - 1; i >= 0 && count < p.latest; i--) {
+      if (items[i].date <= now) {
+        items[i].labels.latest = `Latest-${count + 1}`;
+        count++;
       }
     }
+  }
+
+  // ISO 8601 week number (Monday-based, matches Go's time.ISOWeek())
+  function getISOWeek(d) {
+    const dt = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    dt.setUTCDate(dt.getUTCDate() + 4 - (dt.getUTCDay() || 7)); // Thu of same week
+    const yr = dt.getUTCFullYear();
+    const jan1 = new Date(Date.UTC(yr, 0, 1));
+    const wk = Math.ceil(((dt - jan1) / 86400000 + 1) / 7);
+    return { yr, wk: String(wk).padStart(2, '0') };
   }
 
   // Duration-based: assign numbered labels to newest in each period within window
@@ -381,20 +418,23 @@ function assignLabels(items, p) {
 
   if (p.hourly > 0) assignByWindow(hourlyMs, d => `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}-${d.getUTCHours()}`, 'Hourly');
   if (p.daily > 0)  assignByWindow(dailyMs, d => `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`, 'Daily');
-  if (p.weekly > 0) assignByWindow(weeklyMs, d => { const day = new Date(d); const dow = day.getDay(); day.setDate(day.getDate() - dow + (dow === 0 ? -6 : 1)); return `${day.getFullYear()}-${day.getMonth()}-${day.getDate()}`; }, 'Weekly');
-  if (p.monthly > 0) assignByWindow(monthlyMs, d => `${d.getFullYear()}-${d.getMonth()}`, 'Monthly');
+  if (p.weekly > 0) assignByWindow(weeklyMs, d => { const iso = getISOWeek(d); return `${iso.yr}-${iso.wk}`; }, 'Weekly');
+  if (p.monthly > 0) assignByWindow(monthlyMs, d => `${d.getUTCFullYear()}-${d.getUTCMonth()}`, 'Monthly');
+  if (p.annual > 0) assignByWindow(annualMs, d => `${d.getUTCFullYear()}`, 'Annual');
 
   return items;
 }
 
 function renderLegend() {
   document.getElementById('legend').innerHTML = `
-    ${Object.entries(LABEL_NAMES).map(([key, name]) => `<div class="legend-item"><span class="badge ${key}" style="font-size:0.7em">${name}</span></div>`).join('')}
+    ${Object.entries(LABEL_NAMES).map(([key, name]) => `<div class="legend-item"><span class="badge ${key}" style="font-size:0.7em;cursor:pointer" onclick="highlightByLabel('${key}')">${name}</span></div>`).join('')}
     <span class="legend-sep">│</span>
     <div class="legend-item"><div class="legend-color" style="background:#1a1a2e;border:1px solid #253352"></div>No labels</div>
     <div class="legend-item"><div class="legend-color" style="background:#4a2040;opacity:0.8"></div>1 label</div>
     <div class="legend-item"><div class="legend-color" style="background:#6b2d5b;opacity:0.85"></div>2 labels</div>
-    <div class="legend-item"><div class="legend-color" style="background:#94377a;opacity:0.9"></div>3+ overlap</div>
+    <div class="legend-item"><div class="legend-color" style="background:#94377a;opacity:0.9"></div>3 labels</div>
+    <div class="legend-item"><div class="legend-color" style="background:#c04fa0;opacity:0.95"></div>4 labels</div>
+    <div class="legend-item"><div class="legend-color" style="background:#e87cc0;opacity:1"></div>5+ labels</div>
     <span class="legend-sep">│</span>
     <div class="legend-item" style="opacity:0.5"><div class="legend-color" style="background:repeating-linear-gradient(45deg,#1a1a2e,#1a1a2e 3px,rgba(255,255,255,0.2) 3px,rgba(255,255,255,0.2) 4px)"></div>Future</div>
   `;
@@ -455,6 +495,7 @@ function render() {
   const gridBody = document.getElementById('gridBody');
   let bodyHtml = '';
 
+  let prevMo = null, prevYr = null;
   for (const dayKey of dayKeys) {
     const hours = daysMap[dayKey];
     // Format day label with locale
@@ -463,7 +504,17 @@ function render() {
     const dow = dateObj.getDay();
     const dayLabel = dateObj.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 
-    bodyHtml += `<div class="grid-row"><div class="day-label-cell" style="${dow === 0 ? 'color:#e94560' : dow === 1 ? 'color:#3498db' : ''}">${dayLabel}</div>`;
+    // Detect year boundary (thicker) or month boundary (dashed)
+    let borderClass = '';
+    if (prevYr !== null && y !== prevYr) {
+      borderClass = ' row-border-year';
+    } else if (prevMo !== null && mo !== prevMo) {
+      borderClass = ' row-border';
+    }
+    prevMo = mo;
+    prevYr = y;
+
+    bodyHtml += `<div class="grid-row${borderClass}"><div class="day-label-cell" style="${dow === 0 ? 'color:#e94560' : dow === 1 ? 'color:#3498db' : ''}">${dayLabel}</div>`;
 
     for (let h = 0; h < 24; h++) {
       const item = hours[h];
@@ -581,12 +632,49 @@ for (const [key, val] of urlParams) {
   const el = document.getElementById(key);
   if (el) el.value = val;
 }
+
+// Reset: restore HTML defaults, clear URL
+function resetDefaults() {
+  ['keepLatest','keepHourly','keepDaily','keepWeekly','keepMonthly','keepAnnual','schedule'].forEach(k => {
+    const el = document.getElementById(k);
+    if (el) el.value = el.defaultValue;
+  });
+  // Select: restore selected option
+  const tw = document.getElementById('timeWindow');
+  tw.selectedIndex = [...tw.options].findIndex(o => o.defaultSelected);
+  window.history.replaceState(null, '', window.location.pathname);
+  render();
+}
+
+// Highlight cells containing a specific label (from legend click)
+function highlightByLabel(labelKey) {
+  // Clear previous highlights
+  document.querySelectorAll('.cell.legend-highlight').forEach(c => c.classList.remove('legend-highlight'));
+
+  const cells = document.querySelectorAll('.cell:not(.cell-empty)');
+  let count = 0;
+  cells.forEach(cell => {
+    try {
+      const labels = JSON.parse(cell.dataset.labels);
+      if (labelKey in labels) {
+        cell.classList.add('legend-highlight');
+        count++;
+      }
+    } catch {}
+  });
+
+  // Auto-clear after 3s or next interaction
+  setTimeout(() => {
+    document.querySelectorAll('.cell.legend-highlight').forEach(c => c.classList.remove('legend-highlight'));
+  }, 3000);
+}
+
 render();
 
 // Update URL on change
 function updateUrl() {
   const params = new URLSearchParams();
-  ['keepLatest','keepHourly','keepDaily','keepWeekly','keepMonthly','schedule','timeWindow'].forEach(k => {
+  ['keepLatest','keepHourly','keepDaily','keepWeekly','keepMonthly','keepAnnual','schedule','timeWindow'].forEach(k => {
     const el = document.getElementById(k);
     if (el && el.value) params.set(k, el.value);
   });
